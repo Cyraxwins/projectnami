@@ -307,6 +307,7 @@ class SQL_Translations extends wpdb
             'translate_create_queries',
             'translate_specific',
 			'translate_if_not_exists_insert_merge',
+            'translate_index_hints',
         );
 
         // Perform translations and record query changes.
@@ -321,17 +322,17 @@ class SQL_Translations extends wpdb
             }
         }
 
+        if ( $this->insert_query ) {
+            // $query = $this->on_duplicate_key($query);
+            // $query = $this->split_insert_values($query);
+            /* on_duplicate_key() and split_insert_values() functions may be deleted if on_update_to_merge() works properly. */
+            $query = $this->on_update_to_merge($query);
+        }
+        
         if (!empty($this->preg_data)) {
             $query = vsprintf($query, $this->preg_data);
         }
         $this->preg_data = array();
-
-        if ( $this->insert_query ) {
-            // $query = $this->on_duplicate_key($query);
-            // $query = $this->split_insert_values($query);
-			/* on_duplicate_key() and split_insert_values() functions may be deleted if on_update_to_merge() works properly. */
-			$query = $this->on_update_to_merge($query);
-        }
 
         return $query;
     }
@@ -809,8 +810,9 @@ class SQL_Translations extends wpdb
 
         // Computed
         // This is done as the SQLSRV driver doesn't seem to set a property value for computed
-        // selected columns, thus WP doesn't have anything to work with.
-        if (!preg_match('/COUNT\((.*?)\) as/i', $query)) {
+        // selected columns, thus WP doesn't have anything to work with. (Exception: if it's
+        // part of a HAVING clause, it cannot have an alias.)
+        if (!preg_match('/COUNT\((.*?)\) as/i', $query) && !preg_match('/HAVING COUNT\((.*?)\)/i', $query)) {
             $query = preg_replace('/COUNT\((.*?)\)/i', 'COUNT(\1) as Computed ', $query);
         }
 
@@ -2271,6 +2273,35 @@ class SQL_Translations extends wpdb
             return $query;
         }
         return $arr;
+    }
+
+    /**
+     * MySQL uses FORCE INDEX (columns) as a query index hint. T-SQL allows
+     * an equivalent WITH (INDEX (index_name)) query hint, but that uses the name
+     * of the index rather than the columns, which we don't have here, so just
+     * drop the hint instead.
+     * 
+     * TODO: Perhaps map known index names?
+     *
+     * @param string $query Query coming in
+     *
+     * @return string Translated Query
+     */
+    function translate_index_hints($query)
+    {
+        // Index hints are only used for SELECT queries
+        if (stripos($query, "SELECT") === false) {
+            return $query;
+        }
+        // Short-circuit this translation if there don't appear to be any query hints
+        if (stripos($query, "INDEX") === false && stripos($query, "KEY") === false) {
+            return $query;
+        }
+
+        // Pattern constructed from grammar at https://dev.mysql.com/doc/refman/8.0/en/index-hints.html
+        $query = preg_replace('/(FORCE|IGNORE|USE)\s+(INDEX|KEY)\s+(FOR.*)?\(.*\)/iU', "", $query);
+        
+        return $query;
     }
 
     /**
